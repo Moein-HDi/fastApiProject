@@ -1,11 +1,17 @@
 from datetime import datetime, timedelta
 from typing import Annotated
-
+import json
 from fastapi import Depends, FastAPI, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 from pydantic import BaseModel
+
+from pymongo import MongoClient
+import requests
+
+client = MongoClient("mongodb://localhost:27017/")
+db = client["myDatabase"]
 
 # authorization based on fastapi documentation
 SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
@@ -142,11 +148,61 @@ async def read_users_me(
 # ----------------------------
 
 
-@app.get("/")
-async def root(token: Annotated[str, Depends(oauth2_scheme)]):
-    return {"message": "Hello World"}
+@app.post("/instagramlogin")
+def login(username: str, password: str):
+
+    url = 'https://www.instagram.com/'
+
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                      "Chrome/109.0.5414.120 Safari/537.36",
+        "referer": "https://www.instagram.com/"
+    }
+
+    from requests.utils import dict_from_cookiejar
+
+    with requests.session() as s:
+        response = s.get(url+'api/v1/public/landing_info/', headers=headers)
+        time = int(datetime.now().timestamp())
+        payload = {
+            'username': username,
+            # password needs to be encoded before being submitted but i don't have the necessary algorithm
+            'enc_password': f'#PWD_INSTAGRAM_BROWSER:10:{time}:{password}',
+            'queryParams': {},
+            'trustedDeviceRecords': {},
+            'optIntoOneTap': 'false',
+        }
+        login_headers = {
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+                          "Chrome/109.0.5414.120 Safari/537.36",
+            "referer": "https://www.instagram.com/",
+            'X-Csrftoken': dict_from_cookiejar(response.cookies)['csrftoken']
+        }
+        login_response = s.post(url+'api/v1/web/accounts/login/ajax/', params=payload, headers=login_headers)
+        if login_response.json()['status'] == 'fail':
+            return login_response.status_code
+        else:
+            cookies = login_response.cookies
+            account = db["cookies"].insert_one({"username": username, "cookies": dict(cookies)})
+            return account.inserted_id
+
+    # json_data = json.loads(login_response.text)
+    #
+    # return login_response.cookies
+    # if json_data["authenticated"]:
+    #     return json_data
+    #
 
 
-@app.get("/hello/{name}")
-async def say_hello(name: str, token: Annotated[str, Depends(oauth2_scheme)]):
-    return {"message": f"Hello {name}"}
+
+# @app.get("/followers/{username}")
+# def get_followers(username: str):
+#     cookies = db["cookies"].find_one({"username": username})
+#     if not cookies:
+#         return {"message": "User not logged in"}
+#     response = requests.get(
+#         f"https://www.instagram.com/{username}/followers",
+#         cookies=cookies["cookies"],
+#     )
+#     followers = response.json()
+#     return {"followers": followers}
