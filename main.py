@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from pymongo import MongoClient
 import requests
+from requests.utils import dict_from_cookiejar
 
 client = MongoClient("mongodb://localhost:27017/")
 db = client["myDatabase"]
@@ -18,7 +19,7 @@ SECRET_KEY = "09d25e094faa6ca2556c818166b7a9563b93f7099f6f0f4caa6cf63b88e8d3e7"
 ALGORITHM = "HS256"
 ACCESS_TOKEN_EXPIRE_MINUTES = 30
 
-
+# this is used for easier testing
 fake_users_db = {
     "admin": {
         "username": "admin",
@@ -159,14 +160,12 @@ def login(username: str, password: str):
         "referer": "https://www.instagram.com/"
     }
 
-    from requests.utils import dict_from_cookiejar
-
     with requests.session() as s:
         response = s.get(url+'api/v1/public/landing_info/', headers=headers)
         time = int(datetime.now().timestamp())
         payload = {
             'username': username,
-            # password needs to be encoded before being submitted but i don't have the necessary algorithm
+            # password needs to be encoded before being submitted, but I don't know how it's encrypted
             'enc_password': f'#PWD_INSTAGRAM_BROWSER:10:{time}:{password}',
             'queryParams': {},
             'trustedDeviceRecords': {},
@@ -186,23 +185,51 @@ def login(username: str, password: str):
             account = db["cookies"].insert_one({"username": username, "cookies": dict(cookies)})
             return account.inserted_id
 
-    # json_data = json.loads(login_response.text)
-    #
-    # return login_response.cookies
-    # if json_data["authenticated"]:
-    #     return json_data
-    #
 
+@app.get("/followers/{username}")
+def get_followers(username: str):
+    url = 'https://www.instagram.com/'
+    cookies = db["cookies"].find_one({"username": username})
+    if not cookies:
+        return {"message": "User not logged in"}
+    else:
+        with requests.session() as s:
+            # getting followers count
+            payload = {
+                'username': username
+            }
+            # headers = {
+            #     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) "
+            #                   "Chrome/109.0.5414.120 Safari/537.36",
+            #     "referer": "https://www.instagram.com/"+username+'/',
+            #     'X-Csrftoken': cookies['csrftoken']
+            # }
+            headers = {"Sec-Ch-Ua": "\"Chromium\";v=\"109\", \"Not_A Brand\";v=\"99\"",
+                       "X-Ig-App-Id": "936619743392459",
+                       "X-Ig-Www-Claim": "hmac.AR2FvMcW1KQHpiMt4UWh6EgYyODl-Ts58DjneH7LSCLbddJH",
+                       "Sec-Ch-Ua-Mobile": "?0",
+                       "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/109.0.5414.120 Safari/537.36",
+                       "Viewport-Width": "770", "Accept": "*/*", "Sec-Ch-Ua-Platform-Version": "\"14.0.0\"",
+                       "X-Requested-With": "XMLHttpRequest", "X-Asbd-Id": "129477",
+                       "Sec-Ch-Ua-Full-Version-List": "\"Chromium\";v=\"109.0.5414.120\", \"Not_A Brand\";v=\"99.0.0.0\"",
+                       'X-Csrftoken': cookies['csrftoken'], "Sec-Ch-Prefers-Color-Scheme": "dark",
+                       "Sec-Ch-Ua-Platform": "\"Windows\"", "Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors",
+                       "Sec-Fetch-Dest": "empty", "referer": "https://www.instagram.com/"+username+'/',
+                       "Accept-Encoding": "gzip, deflate", "Accept-Language": "en-US,en;q=0.9"}
 
+            follower_response = s.get(url+'api/v1/users/web_profile_info/', params=payload, headers=headers, cookies=cookies)
+            follower_count = follower_response.json()['data']['user']['edge_followed_by']['count']
 
-# @app.get("/followers/{username}")
-# def get_followers(username: str):
-#     cookies = db["cookies"].find_one({"username": username})
-#     if not cookies:
-#         return {"message": "User not logged in"}
-#     response = requests.get(
-#         f"https://www.instagram.com/{username}/followers",
-#         cookies=cookies["cookies"],
-#     )
-#     followers = response.json()
-#     return {"followers": followers}
+            # get followers
+            payload = {
+                'count': follower_count,
+                'max_id': 'QVFBR2NkTXhsYXBaZjZWMklUd3hVdTNodVhXWmVZYUc1M1FRSUNJLXpfNVkyNkdPRkwtV1FZSWFzbG00UE85T0cwbms2NElvTkFFZWNCNUtMcHU0NVIxaQ%3D%3D',
+                'search_surface': 'follow_list_page'
+            }
+            headers['referer'] = "https://www.instagram.com/" + username + '/followers/'
+            followerlist_response = s.get(url+f'api/v1/friendships/{cookies["ds_user_id"]}/followers/', params=payload, headers=headers, cookies=cookies)
+            followerlist = {}
+            for user in followerlist_response.json()['users']:
+                followerlist[user['pk']] = user['username']
+
+            return followerlist
